@@ -1,0 +1,33 @@
+from flask import Flask, request, jsonify
+from pymongo import MongoClient
+from datetime import datetime
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# MongoDB setup
+client = MongoClient('mongodb://localhost:27017/')  # Connect to MongoDB
+db = client['esp32_data']
+collection = db['sensor_data_attack_25_11']
+
+@app.route('/data', methods=['POST'])
+def receive_data():
+    # Parse data from ESP32
+    data = {
+        "temperature": float(request.form.get("temp", 0)),
+        "humidity": float(request.form.get("hum", 0)),
+        "cpu_usage": float(request.form.get("cpu", 0)),
+        "memory_usage": float(request.form.get("memory", 0)),
+        "device_id": request.form.get("device_id", "unknown"),
+        "location": request.form.get("location", "unknown"),
+        "timestamp": datetime.now()
+    }
+
+    # Insert data into MongoDB
+    collection.insert_one(data)
+
+    # Send response back to ESP32
+    return jsonify({"message": "Data received", "status": "success"}), 201
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)  # Run Flask server
