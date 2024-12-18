@@ -1,0 +1,111 @@
+#include <DHT11.h>
+#include "WiFi.h"
+#include <HTTPClient.h>
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_system.h"
+
+// DHT11 Sensor Pin
+DHT11 dht11_1(4);  // Sensor 1 connected to GPIO4
+
+// WiFi credentials
+const char* ssid = "";  // Your SSID
+const char* password = "";  // Your WiFi password
+
+// Flask server endpoint
+const char* serverName = "http://192.168.29.151:8080/data";  // Replace with your server's IP and port
+
+void setup() {
+    Serial.begin(115200);  // Start serial communication
+    WiFi.begin(ssid, password);  // Connect to WiFi
+
+    // Wait until WiFi is connected
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.println("Connecting to WiFi...");
+    }
+
+    Serial.println("Connected to WiFi!");
+    Serial.println("IP Address: ");
+    Serial.println(WiFi.localIP());  // Print ESP32's IP address
+
+    // Initialize the WiFi interface for statistics
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+}
+
+void loop() {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+
+        // Read sensor data
+        int temperature = dht11_1.readTemperature();
+        int humidity = dht11_1.readHumidity();
+
+        // Get CPU and memory usage
+        float free_heap = esp_get_free_heap_size();  // Free heap size
+        float total_heap = ESP.getHeapSize();        // Total heap size
+        float cpu_usage = (free_heap / total_heap) * 100;  // CPU usage in percentage
+        float memory_usage = 100 - cpu_usage;  // Approximation for memory usage
+
+        // Get network usage stats using ESP-IDF API
+        esp_netif_stats_t netif_stats;
+        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");  // Get the WiFi station interface
+        unsigned long tx_bytes = 0;
+        unsigned long rx_bytes = 0;
+
+        if (netif && esp_netif_get_stats(netif, &netif_stats) == ESP_OK) {
+            tx_bytes = netif_stats.tx_bytes;  // Transmitted bytes
+            rx_bytes = netif_stats.rx_bytes;  // Received bytes
+        } else {
+            Serial.println("Failed to get network statistics.");
+        }
+
+        // Debugging: Print readings to Serial Monitor
+        Serial.println("==========================================");
+        Serial.print("Temperature: ");
+        Serial.println(temperature);
+        Serial.print("Humidity: ");
+        Serial.println(humidity);
+        Serial.print("CPU Usage (%): ");
+        Serial.println(cpu_usage);
+        Serial.print("Memory Usage (%): ");
+        Serial.println(memory_usage);
+        Serial.print("Transmitted Bytes: ");
+        Serial.println(tx_bytes);
+        Serial.print("Received Bytes: ");
+        Serial.println(rx_bytes);
+
+        // Prepare HTTP POST data
+        String httpRequestData = "temp=" + String(temperature) +
+                                 "&hum=" + String(humidity) +
+                                 "&cpu=" + String(cpu_usage, 2) +
+                                 "&memory=" + String(memory_usage, 2) +
+                                 "&tx_bytes=" + String(tx_bytes) +
+                                 "&rx_bytes=" + String(rx_bytes) +
+                                 "&device_id=D02&location=cse_hod";
+
+        // Make HTTP request
+        http.begin(serverName);  // Specify destination
+        http.addHeader("Content-Type", "application/x-www-form-urlencoded");  // Header
+
+        int httpResponseCode = http.POST(httpRequestData);  // Send POST request
+
+        // Debugging: HTTP response code
+        if (httpResponseCode > 0) {
+            Serial.print("HTTP Response code: ");
+            Serial.println(httpResponseCode);
+        } else {
+            Serial.print("Error code: ");
+            Serial.println(httpResponseCode);
+        }
+
+        http.end();  // Free resources
+    } else {
+        Serial.println("WiFi disconnected, reconnecting...");
+        WiFi.reconnect();
+    }
+
+    delay(1000);  // Send data every second
+}
