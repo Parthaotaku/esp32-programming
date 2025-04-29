@@ -1,0 +1,78 @@
+import numpy as np
+import pandas as pd
+import time
+from collections import Counter
+import math
+import joblib
+from scapy.all import sniff, IP, TCP, UDP, get_if_list
+
+# Load trained model components
+try:
+    meta_learner = joblib.load('stacking_model.pkl')
+    rf_model = joblib.load('rf_model.pkl')
+    xgb_model = joblib.load('xgb_model.pkl')
+    scaler = joblib.load('scaler.pkl')
+except FileNotFoundError as e:
+    print(f"Error: {e}. Ensure .pkl files are in the working directory.")
+    raise
+
+def calculate_entropy(ip_list):
+    counts = Counter(ip_list)
+    total = sum(counts.values())
+    entropy = -sum((count/total) * math.log2(count/total) for count in counts.values()) if total > 0 else 0
+    return entropy
+
+def predict_packet(features_df):
+    features_scaled = scaler.transform(features_df)
+    rf_pred = rf_model.predict_proba(features_scaled)[:, 1]
+    xgb_pred = xgb_model.predict_proba(features_scaled)[:, 1]
+    meta_features = np.column_stack((rf_pred, xgb_pred))
+    return meta_learner.predict(meta_features)[0]
+
+# Real-time detection
+def realtime_detection(interface='Wi-Fi', target_ip='192.168.0.110', window_size=10, max_packets=100):
+    packets = []
+    feature_names = ['time_delta', 'pps', 'length', 'src_ip_entropy', 'syn_flag', 'ack_flag']
+    
+    def process_packet(packet):
+        if packet.haslayer(IP) and (packet[IP].src == target_ip or packet[IP].dst == target_ip):
+            pkt_time = time.time()
+            packets.append((pkt_time, packet))
+            packets[:] = [p for p in packets if pkt_time - window_size <= p[0]]
+            
+            if len(packets) >= 2:
+                pkt = packet
+                time_delta = pkt_time - packets[-2][0] if len(packets) > 1 else 0
+                pps = len(packets) / window_size
+                src_ips = [p[IP].src for t, p in packets]
+                src_ip_entropy = calculate_entropy(src_ips)
+                length = len(pkt)
+                syn_flag = 1 if pkt.haslayer(TCP) and pkt[TCP].flags & 0x02 else 0
+                ack_flag = 1 if pkt.haslayer(TCP) and pkt[TCP].flags & 0x10 else 0
+                
+                # Create a DataFrame for features
+                features = [[time_delta, pps, length, src_ip_entropy, syn_flag, ack_flag]]
+                features_df = pd.DataFrame(features, columns=feature_names)
+                
+                # Predict
+                is_attack = predict_packet(features_df)
+                
+                # Display result
+                result = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {'Attack Detected!' if is_attack else 'No Attack'} " \
+                         f"(pps={pps:.2f}, time_delta={time_delta:.4f}, syn_flag={syn_flag})"
+                print(result)
+                
+                # Stop after max_packets
+                if len(packets) >= max_packets:
+                    raise StopIteration
+
+    print(f"Starting real-time detection on {interface} for {target_ip}...")
+    try:
+        sniff(iface=interface, prn=process_packet, store=False, count=max_packets)
+    except PermissionError:
+        print("Permission denied. Run Jupyter Notebook as administrator and ensure npcap is installed.")
+    except StopIteration:
+        print("Reached max packets. Stopping detection.")
+
+# Run detection
+realtime_detection(interface='Wi-Fi', target_ip='192.168.0.190', window_size=10, max_packets=100)
